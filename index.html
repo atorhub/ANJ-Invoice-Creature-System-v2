@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>ANJ Invoice — Hybrid-D v3</title>
+
+<link rel="manifest" href="manifest.json" />
+<link rel="stylesheet" href="style.css" />
+
+<!-- Icon fallbacks -->
+<link rel="icon" href="icon-48.png" sizes="48x48" />
+<link rel="apple-touch-icon" href="icon-192.png" />
+
+<!-- pdf.js and tesseract.js (CDN) -->
+<script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.10.177/build/pdf.min.js"></script>
+<script>pdfjsLib = window.pdfjsLib || window['pdfjs-dist/build/pdf']; pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.10.177/build/pdf.worker.min.js';</script>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@4.1.4/dist/tesseract.min.js"></script>
+
+<!-- html2canvas + jspdf for PDF export -->
+<script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+
+</head>
+<body>
+<header class="app-header">
+  <div class="brand">
+    <img id="appLogo" alt="logo" src="icon-128.png" />
+    <div>
+      <h1>ANJ Invoice</h1>
+      <small>Smart Bill Parser · History · Creatures</small>
+    </div>
+  </div>
+  <div class="header-actions">
+    <button id="exportAllBtn" class="btn gold">Export All (JSON)</button>
+    <button id="clearHistoryBtn" class="btn outline">Clear History</button>
+  </div>
+</header>
+
+<main class="main">
+  <section class="card">
+    <h2>Upload Bill / Invoice</h2>
+    <div class="file-row">
+      <input id="fileInput" type="file" accept=".pdf,image/*,.txt" />
+      <div class="hint">Supported: PDF, PNG, JPG, TXT — offline OCR via Tesseract.js + PDF.js</div>
+    </div>
+
+    <div class="controls">
+      <button id="parseBtn" class="btn gold">Parse Bill</button>
+      <button id="ocrBtn" class="btn">OCR (image)</button>
+    </div>
+  </section>
+
+  <section class="card" id="extractedCard">
+    <h2>Extracted Information</h2>
+    <div id="extractedBox" class="box">
+      <div><strong>Date:</strong> <span id="f_date">-</span></div>
+      <div><strong>Total:</strong> <span id="f_total">-</span></div>
+      <div><strong>Merchant:</strong> <span id="f_merchant">-</span></div>
+      <div><strong>Category:</strong> <span id="f_category">-</span></div>
+      <div><strong>Items (best-effort):</strong>
+        <pre id="f_items">None detected</pre>
+      </div>
+      <div class="buttons-row">
+        <button id="saveBtn" class="btn gold">Save to History</button>
+        <button id="downloadPdfBtn" class="btn gold-outline">Download PDF</button>
+        <button id="printBtn" class="btn outline">Print</button>
+      </div>
+    </div>
+  </section>
+
+  <section class="card" id="historyCard">
+    <h2>History</h2>
+    <div id="historyList" class="box small">No saved bills yet.</div>
+  </section>
+
+  <section class="card" id="analyticsCard">
+    <h2>Analytics</h2>
+    <div id="analyticsBox" class="box small">(Monthly totals placeholder)</div>
+  </section>
+</main>
+
+<footer class="footer">
+  ANJ Creator Hub © 2025 · Invoice Hybrid-D v3
+</footer>
+
+<!-- creature registry (kept separate) -->
+<script src="creatures.js"></script>
+
+<!-- main app script -->
+<script src="script.js"></script>
+
+<!-- service worker registration -->
+<script>
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('service-worker.js').catch(()=>{/* ignore for dev */});
+}
+</script>
+</body>
+</html>
