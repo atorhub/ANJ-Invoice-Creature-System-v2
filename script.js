@@ -1,274 +1,208 @@
-/* script.js - main UI logic, parser, OCR, IndexedDB tiny wrapper */
-(function(){
-  // UI refs
-  const fileInput = document.getElementById('fileInput');
-  const parseBtn = document.getElementById('parseBtn');
-  const ocrBtn = document.getElementById('ocrBtn');
-  const f_date = document.getElementById('f_date');
-  const f_total = document.getElementById('f_total');
-  const f_merchant = document.getElementById('f_merchant');
-  const f_category = document.getElementById('f_category');
-  const f_items = document.getElementById('f_items');
-  const saveBtn = document.getElementById('saveBtn');
-  const historyList = document.getElementById('historyList');
-  const downloadPdfBtn = document.getElementById('downloadPdfBtn');
-  const printBtn = document.getElementById('printBtn');
-  const exportAllBtn = document.getElementById('exportAllBtn');
-  const clearHistoryBtn = document.getElementById('clearHistoryBtn');
-
-  // IndexedDB simple wrapper
-  const DB = {
-    db: null,
-    init: function(){
-      return new Promise((res,rej)=>{
-        const r = indexedDB.open('anj-invoice-db',1);
-        r.onupgradeneeded = e=>{
-          const d = e.target.result;
-          if(!d.objectStoreNames.contains('bills')) d.createObjectStore('bills',{keyPath:'id'});
-        };
-        r.onsuccess = e=>{DB.db = e.target.result; res();};
-        r.onerror = e=>rej(e);
-      });
-    },
-    save: function(obj){
-      return new Promise((res,rej)=>{
-        const tx = DB.db.transaction('bills','readwrite');
-        const store = tx.objectStore('bills');
-        store.put(obj);
-        tx.oncomplete = ()=>res();
-        tx.onerror = e=>rej(e);
-      });
-    },
-    all: function(){ return new Promise((res,rej)=>{ const tx = DB.db.transaction('bills','readonly'); const store = tx.objectStore('bills'); const req = store.getAll(); req.onsuccess = ()=>res(req.result); req.onerror = rej; }); },
-    clear: function(){ return new Promise((res,rej)=>{ const tx = DB.db.transaction('bills','readwrite'); const store = tx.objectStore('bills'); const req = store.clear(); req.onsuccess = ()=>res(); req.onerror = rej; }); }
+document.addEventListener("DOMContentLoaded", () => {
+  const el = {
+    file: document.getElementById("fileInput"),
+    raw: document.getElementById("rawText"),
+    clean: document.getElementById("cleanedText"),
+    json: document.getElementById("jsonPreview"),
+    status: document.getElementById("statusBar"),
+    dual: document.getElementById("dualOCRBtn"),
+    ocr: document.getElementById("ocrOnlyBtn"),
+    parse: document.getElementById("parseBtn"),
+    theme: document.getElementById("themeSelect"),
+    layout: document.getElementById("layoutSelect")
   };
 
-  // Basic heuristic parser for text -> fields
-  function parseText(text){
-    const result = { date: null, total: null, merchant: null, items: [], category: 'general' };
-    const lines = text.split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
+  function setStatus(msg, err = false) {
+    el.status.textContent = msg;
+    el.status.style.color = err ? "#ff4d4d" : "#7CFC98";
+  }
 
-    // merchant: first non-empty line that is not a word like 'invoice'
-    for(let i=0;i<3 && i<lines.length;i++){
-      const l = lines[i].replace(/\|/g,' ').trim();
-      if(!/invoice|bill|tax/i.test(l)) { result.merchant = l; break; }
+  el.theme.addEventListener("change", () => {
+    document.body.classList.forEach(c => {
+      if (c.startsWith("theme-")) document.body.classList.remove(c);
+    });
+    document.body.classList.add(`theme-${el.theme.value}`);
+  });
+
+  el.layout.addEventListener("change", () => {
+    document.body.classList.forEach(c => {
+      if (c.startsWith("layout-")) document.body.classList.remove(c);
+    });
+    document.body.classList.add(`layout-${el.layout.value}`);
+  });
+
+  async function runOCR(file) {
+    setStatus("OCR running…");
+    const res = await Tesseract.recognize(file, "eng", {
+      logger: m => {
+        if (m.status === "recognizing text") {
+          setStatus(`OCR ${Math.round(m.progress * 100)}%`);
+        }
+      }
+    });
+    return res.data.text || "";
+  }
+
+  async function extractText(file) {
+    if (file.name.endsWith(".pdf")) {
+      setStatus("Reading PDF…");
+      pdfjsLib.GlobalWorkerOptions.workerSrc =
+        "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+
+      const pdf = await pdfjsLib.getDocument(URL.createObjectURL(file)).promise;
+      let text = "";
+      for (let i = 1; i <= pdf.numPages; i++) {
+        const page = await pdf.getPage(i);
+        const content = await page.getTextContent();
+        text += content.items.map(i => i.str).join(" ") + "\n";
+      }
+      return text;
     }
+    return "";
+  }
 
-    // date: try common formats
-    const dateRx = /\b((0?[1-9]|[12][0-9]|3[01])[\/\-.](0?[1-9]|1[012])[\/\-.]\d{2,4}|\d{4}[\/\-.](0?[1-9]|1[012])[\/\-.](0?[1-9]|[12][0-9]|3[01])|[A-Za-z]{3,9}\s+\d{1,2},\s*\d{4})\b/;
-    for(const l of lines){ const m = l.match(dateRx); if(m){ result.date = m[0]; break; } }
+  function cleanText(txt) {
+    return txt.replace(/\s+/g, " ").trim();
+  }
 
-    // total: look for lines containing 'total' or currency symbol
-    for(const l of lines.slice(-8)){
-      if(/total|grand total|balance due/i.test(l) || /₹|\$|INR|Rs\.?/i.test(l)){
-        const num = l.replace(/[^0-9.,]/g,'').replace(/,+/g,'');
-        if(num) { result.total = num; break; }
+  /* -------- LEGACY PARSER (UNCHANGED) -------- */
+  function parseInvoice(text) {
+    const out = { merchant: null, date: null, total: null };
+    const total = text.match(/total[:\s]*₹?\s*([\d,.]+)/i);
+    const date = text.match(/\b\d{1,2}[-/]\d{1,2}[-/]\d{2,4}\b/);
+    if (total) out.total = total[1];
+    if (date) out.date = date[0];
+    out.merchant = text.split(" ").slice(0, 4).join(" ");
+    return out;
+  }
+
+  /* -------- NEW ANALYSIS PARSER (ADDED) -------- */
+  function analyzeInvoice(text) {
+    const result = { merchant: null, date: null, total: null };
+
+    if (!text) return result;
+
+    const normalized = text
+      .replace(/₹/g, "Rs ")
+      .replace(/\s{2,}/g, " ")
+      .trim();
+
+    const lines = normalized
+      .split(/\r?\n/)
+      .map(l => l.trim())
+      .filter(Boolean);
+
+    /* MERCHANT */
+    const ignore = /invoice|bill|tax|gst|receipt|total|date/i;
+    for (let i = 0; i < Math.min(6, lines.length); i++) {
+      const l = lines[i];
+      if (!ignore.test(l) && !/[0-9]{3,}/.test(l) && l.length < 60) {
+        result.merchant = l;
+        break;
       }
     }
-    if(!result.total){
-      // fallback scan for largest number
-      let max = 0; for(const l of lines){ const num = parseFloat((l.match(/([0-9]+[.,][0-9]{2,})/g)||[]).join('').replace(/,/g,'')); if(num>max) max=num; }
-      if(max>0) result.total = String(max);
-    }
 
-    // items: best-effort — lines that look like "qty price total"
-    const itemRx = /^(.{2,60})\s+(\d+)\s+([0-9.,]+)\s+([0-9.,]+)$/;
-    for(const l of lines){
-      const m = l.match(itemRx);
-      if(m) result.items.push({name:m[1].trim(), qty:m[2], price:m[3], total:m[4]});
-    }
-    if(result.items.length===0){
-      // try a simpler item line with price at end
-      for(const l of lines){
-        const m = l.match(/^(.{2,60})\s+([0-9.,]+)$/);
-        if(m && /[A-Za-z]/.test(m[1])) result.items.push({name:m[1].trim(), price:m[2]});
+    /* DATE */
+    const dateRx =
+      /\b((0?[1-9]|[12][0-9]|3[01])[\/\-.](0?[1-9]|1[012])[\/\-.]\d{2,4}|\d{4}[\/\-.](0?[1-9]|1[012])[\/\-.](0?[1-9]|[12][0-9]|3[01])|[A-Za-z]{3,9}\s+\d{1,2},\s*\d{4})\b/;
+
+    for (const l of lines) {
+      const m = l.match(dateRx);
+      if (m) {
+        result.date = m[0];
+        break;
       }
     }
 
-    // detect category keyword mapping
-    const keywordMap = { food: ['restaurant','cafe','grocer','grocery','food','mart'], shopping: ['store','shop','mall','shopping','boutique'], finance: ['bank','payment','upi','transaction','invoice'] };
-    for(const [cat,keys] of Object.entries(keywordMap)){
-      for(const k of keys) if(text.toLowerCase().includes(k)) { result.category = cat; break; }
+    /* TOTAL */
+    let candidates = [];
+    lines.forEach(l => {
+      if (/total|grand total|amount due|net payable|balance/i.test(l)) {
+        const num = l.replace(/[^0-9.,]/g, "").replace(/,+/g, "");
+        if (num) candidates.push(num);
+      }
+    });
+
+    if (candidates.length) {
+      result.total = candidates[0];
+    } else {
+      let max = 0;
+      lines.forEach(l => {
+        const m = l.match(/([0-9]+[.,][0-9]{2})/g);
+        if (m) {
+          m.forEach(v => {
+            const n = parseFloat(v.replace(/,/g, ""));
+            if (n > max) max = n;
+          });
+        }
+      });
+      if (max > 0) result.total = String(max);
     }
 
     return result;
   }
 
-  // UI utility: show parsed result
-  function showParsed(res){
-    f_date.textContent = res.date||'-';
-    f_total.textContent = res.total? (res.total) : '-';
-    f_merchant.textContent = res.merchant||'-';
-    f_category.textContent = (res.category||'General');
-    f_items.textContent = res.items && res.items.length ? JSON.stringify(res.items,null,2) : 'None detected';
-
-    // show creature badge (if registry present)
-    if(window.getCreatureForCategory){
-      const c = getCreatureForCategory(res.category);
-      if(c){
-        // show badge small in merchant area (append)
-        f_merchant.parentElement.querySelector('.badge')?.remove();
-        const img = document.createElement('img');
-        img.src = c.badge;
-        img.style.height='32px'; img.style.marginLeft='8px'; img.className='badge';
-        f_merchant.parentElement.appendChild(img);
-      }
+  async function processFile(useOCR) {
+    if (!el.file.files[0]) {
+      setStatus("No file selected", true);
+      return;
     }
+
+    let text = "";
+    const file = el.file.files[0];
+
+    if (file.type.startsWith("image/") && useOCR) {
+      text = await runOCR(file);
+    } else {
+      text = await extractText(file);
+    }
+
+    text = cleanText(text);
+
+    const legacy = parseInvoice(text);
+    const analysis = analyzeInvoice(text);
+
+    const finalResult = {
+      merchant: analysis.merchant || legacy.merchant,
+      date: analysis.date || legacy.date,
+      total: analysis.total || legacy.total
+    };
+
+    el.raw.textContent = text || "--";
+    el.clean.textContent = text || "--";
+    el.json.textContent = JSON.stringify(finalResult, null, 2);
+
+    setStatus("Done ✓");
   }
 
-  // read file: PDF or image or txt
-  async function extractTextFromFile(file){
-    const name = file.name||'file';
-    const type = file.type || '';
-    if(type === 'text/plain' || name.endsWith('.txt')){
-      return file.text();
+  el.dual.onclick = () => processFile(true);
+  el.ocr.onclick = () => processFile(true);
+  el.parse.onclick = () => {
+    if (!el.clean.textContent || el.clean.textContent === "--") {
+      setStatus("Nothing to parse", true);
+      return;
     }
-    if(type.startsWith('image/') || /\.(png|jpg|jpeg)$/i.test(name)){
-      // use OCR
-      return await ocrFromImageFile(file);
-    }
-    // assume PDF
-    try{
-      const arr = new Uint8Array(await file.arrayBuffer());
-      const pdf = await pdfjsLib.getDocument({data:arr}).promise;
-      let whole = '';
-      for(let i=1;i<=Math.min(pdf.numPages,10);i++){
-        const page = await pdf.getPage(i);
-        const txtContent = await page.getTextContent();
-        const pageText = txtContent.items.map(it=>it.str).join(' ');
-        whole += pageText + '\n';
-      }
-      return whole;
-    }catch(err){
-      // fallback to OCR of first page snapshot
-      console.warn('pdf parse failed, fallback to OCR',err);
-      return await ocrFromImageFile(file);
-    }
-  }
 
-  async function ocrFromImageFile(file){
-    // Tesseract recognizes images and also PDF pages if converted to image
-    try{
-      const worker = Tesseract.createWorker({logger:m=>console.debug('tess',m)});
-      await worker.load();
-      await worker.loadLanguage('eng');
-      await worker.initialize('eng');
-      const {data: {text}} = await worker.recognize(await file.arrayBuffer());
-      await worker.terminate();
-      return text;
-    }catch(err){
-      console.error('OCR failed',err);
-      return '';
-    }
-  }
+    const legacy = parseInvoice(el.clean.textContent);
+    const analysis = analyzeInvoice(el.clean.textContent);
 
-  // action handlers
-  parseBtn.addEventListener('click', async ()=>{
-    const f = fileInput.files[0];
-    if(!f){ alert('Choose a file first'); return; }
-    try{
-      const txt = await extractTextFromFile(f);
-      const parsed = parseText(txt || '');
-      parsed.id = 'bill-' + Date.now();
-      parsed.raw = txt.slice(0,10000);
-      parsed.fileName = f.name;
-      parsed.savedAt = new Date().toISOString();
-      window.lastParsed = parsed;
-      showParsed(parsed);
-    }catch(err){
-      alert('Parse failed: ' + (err && err.message || err));
-    }
-  });
+    el.json.textContent = JSON.stringify(
+      {
+        merchant: analysis.merchant || legacy.merchant,
+        date: analysis.date || legacy.date,
+        total: analysis.total || legacy.total
+      },
+      null,
+      2
+    );
 
-  ocrBtn.addEventListener('click', async ()=>{
-    const f = fileInput.files[0];
-    if(!f){ alert('Choose a file first'); return; }
-    try{
-      const txt = await ocrFromImageFile(f);
-      const parsed = parseText(txt || '');
-      parsed.id = 'bill-' + Date.now();
-      parsed.raw = txt.slice(0,10000);
-      parsed.fileName = f.name;
-      window.lastParsed = parsed;
-      showParsed(parsed);
-    }catch(err){
-      alert('OCR failed: ' + err.message);
-    }
-  });
+    setStatus("Parsed ✓");
+  };
 
-  saveBtn.addEventListener('click', async ()=>{
-    if(!window.lastParsed) return alert('Nothing to save');
-    // save file binary optionally
-    const f = fileInput.files[0];
-    if(f){
-      try{
-        const arr = await f.arrayBuffer();
-        window.lastParsed.fileData = Array.from(new Uint8Array(arr).slice(0,200000)); // store truncated binary to avoid huge DB
-      }catch(e){}
-    }
-    await DB.save(window.lastParsed);
-    refreshHistory();
-    alert('Saved to history');
-  });
+  const sidebarToggle = document.getElementById("sidebarToggle");
+  sidebarToggle.onclick = () =>
+    document.body.classList.toggle("sidebar-hidden");
 
-  downloadPdfBtn.addEventListener('click', async ()=>{
-    // capture invoice area and create PDF
-    const el = document.querySelector('main');
-    const canvas = await html2canvas(el, {scale:2});
-    const img = canvas.toDataURL('image/jpeg',0.9);
-    const { jsPDF } = window.jspdf;
-    const pdf = new jsPDF({orientation:'portrait', unit:'px', format:[canvas.width, canvas.height]});
-    pdf.addImage(img, 'JPEG', 0, 0, canvas.width, canvas.height);
-    pdf.save('anj-invoice.pdf');
-  });
-
-  printBtn.addEventListener('click', ()=> window.print());
-
-  exportAllBtn.addEventListener('click', async ()=>{
-    const all = await DB.all();
-    const blob = new Blob([JSON.stringify(all,null,2)], {type:'application/json'});
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a'); a.href = url; a.download = 'anj-history.json'; a.click(); URL.revokeObjectURL(url);
-  });
-
-  clearHistoryBtn.addEventListener('click', async ()=>{
-    if(!confirm('Clear history?')) return;
-    await DB.clear(); refreshHistory();
-  });
-
-  async function refreshHistory(){
-    const all = await DB.all();
-    if(!all.length){ historyList.innerHTML = 'No saved bills yet.'; return; }
-    historyList.innerHTML = '';
-    all.sort((a,b)=> new Date(b.savedAt)-new Date(a.savedAt));
-    all.forEach(item=>{
-      const div = document.createElement('div');
-      div.className='history-item';
-      div.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:center">
-        <div>
-          <strong>${item.merchant||item.fileName||'Bill'}</strong>
-          <div style="color:var(--muted);font-size:13px">${item.savedAt}</div>
-        </div>
-        <div style="text-align:right">
-          <div style="font-weight:700">${item.total||'-'}</div>
-          <button class="btn" data-id="${item.id}">Load</button>
-        </div>
-      </div>`;
-      historyList.appendChild(div);
-      div.querySelector('button').addEventListener('click', ()=>{
-        window.lastParsed = item;
-        showParsed(item);
-      });
-    });
-  }
-
-  // init db + UI
-  (async function init(){
-    try{
-      await DB.init();
-    }catch(e){
-      console.warn('IndexedDB init failed',e);
-    }
-    refreshHistory();
-  })();
-})();
+  setStatus("Ready ✓");
+});
+                          
